@@ -1,0 +1,20 @@
+[package]
+name = "ili9431_esp32s3_test"
+version = "0.1.0"
+authors = ["bjoernQ <bjoern.quentin@mobile-j.de>"]
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+hal = { package = "esp32s3-hal", version = "0.7.0" }
+esp-backtrace = { version = "0.5.0", features = ["esp32s3", "panic-handler", "print-uart"] }
+esp-println       = { version = "0.3.1", features = ["esp32s3"] }
+mipidsi = "0.6.0"
+embedded-hal = "0.2.7"
+embedded-graphics = "0.7.1"
+display-interface = "0.4.1"
+byte-slice-cast = { version = "0.3.5", default-features = false }
+embedded-dma = "0.2.0"
+
+[patch.crates-io]
+esp-hal-common = { path = "/projects/esp/esp-hal/esp-hal-common" }
