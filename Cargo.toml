@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 [dependencies]
 hal = { package = "esp32s3-hal", version = "0.7.0" }
 esp-backtrace = { version = "0.5.0", features = ["esp32s3", "panic-handler", "print-uart"] }
-esp-println       = { version = "0.3.1", features = ["esp32s3"] }
+esp-println       = { version = "0.4.0", features = ["esp32s3"] }
 mipidsi = "0.6.0"
 embedded-hal = "0.2.7"
 embedded-graphics = "0.7.1"
@@ -17,4 +17,4 @@ byte-slice-cast = { version = "0.3.5", default-features = false }
 embedded-dma = "0.2.0"
 
 [patch.crates-io]
-esp-hal-common = { path = "/projects/esp/esp-hal/esp-hal-common" }
+esp-hal-common = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal-common", rev = "3ae95674e9a340ccb35d7c4a53367babdf528bbe" }
