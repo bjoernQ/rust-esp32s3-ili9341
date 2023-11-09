@@ -3,7 +3,7 @@
 use core::cell::RefCell;
 
 use display_interface::{DataFormat, DisplayError, WriteOnlyDataCommand};
-use hal::gpio::OutputPin;
+use hal::gpio::{Output, OutputPin, PushPull};
 use hal::spi::master::dma::SpiDmaTransfer;
 use hal::spi::master::InstanceDma;
 use hal::{
@@ -212,7 +212,7 @@ where
 {
     spi: RefCell<Option<SpiDma<'d, T, C, M>>>,
     dc: DC,
-    cs: CS,
+    cs: Option<CS>,
 }
 
 #[allow(unused)]
@@ -229,14 +229,32 @@ where
         Self {
             spi: RefCell::new(Some(spi)),
             dc,
-            cs,
+            cs: Some(cs),
         }
     }
 
     /// Consume the display interface and return
     /// the underlying peripheral driver and GPIO pins used by it
-    pub fn release(self) -> (SpiDma<'d, T, C, M>, DC, CS) {
+    pub fn release(self) -> (SpiDma<'d, T, C, M>, DC, Option<CS>) {
         (self.spi.take().unwrap(), self.dc, self.cs)
+    }
+}
+
+pub fn new_no_cs<'d, DC, T, C, M>(
+    spi: SpiDma<'d, T, C, M>,
+    dc: DC,
+) -> SPIInterface<'d, DC, hal::gpio::Gpio0<Output<PushPull>>, T, C, M>
+where
+    DC: OutputPin,
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode,
+{
+    SPIInterface {
+        spi: RefCell::new(Some(spi)),
+        dc,
+        cs: None::<hal::gpio::Gpio0<Output<PushPull>>>,
     }
 }
 
@@ -251,7 +269,9 @@ where
 {
     fn send_commands(&mut self, cmds: DataFormat<'_>) -> Result<(), DisplayError> {
         // Assert chip select pin
-        self.cs.set_low().map_err(|_| DisplayError::CSError)?;
+        if let Some(cs) = self.cs.as_mut() {
+            cs.set_low().map_err(|_| DisplayError::CSError)?;
+        }
 
         // 1 = data, 0 = command
         self.dc.set_low().map_err(|_| DisplayError::DCError)?;
@@ -260,7 +280,9 @@ where
         let res = send_u8(self.spi.take().unwrap(), cmds);
 
         // Deassert chip select pin
-        self.cs.set_high().ok();
+        if let Some(cs) = self.cs.as_mut() {
+            cs.set_high().ok();
+        }
 
         match res {
             Ok(spi) => {
@@ -273,7 +295,9 @@ where
 
     fn send_data(&mut self, buf: DataFormat<'_>) -> Result<(), DisplayError> {
         // Assert chip select pin
-        self.cs.set_low().map_err(|_| DisplayError::CSError)?;
+        if let Some(cs) = self.cs.as_mut() {
+            cs.set_low().map_err(|_| DisplayError::CSError)?;
+        }
 
         // 1 = data, 0 = command
         self.dc.set_high().map_err(|_| DisplayError::DCError)?;
@@ -282,87 +306,9 @@ where
         let res = send_u8(self.spi.take().unwrap(), buf);
 
         // Deassert chip select pin
-        self.cs.set_high().ok();
-
-        match res {
-            Ok(spi) => {
-                self.spi.replace(Some(spi));
-                Ok(())
-            }
-            Err(err) => Err(err),
+        if let Some(cs) = self.cs.as_mut() {
+            cs.set_high().ok();
         }
-    }
-}
-
-/// SPI display interface.
-///
-/// This combines the SPI peripheral and a data/command pin
-pub struct SPIInterfaceNoCS<'d, DC, T, C, M>
-where
-    DC: OutputPin,
-    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-    C: ChannelTypes,
-    C::P: SpiPeripheral,
-    M: DuplexMode,
-{
-    spi: RefCell<Option<SpiDma<'d, T, C, M>>>,
-    dc: DC,
-}
-
-#[allow(unused)]
-impl<'d, DC, T, C, M> SPIInterfaceNoCS<'d, DC, T, C, M>
-where
-    DC: OutputPin,
-    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-    C: ChannelTypes,
-    C::P: SpiPeripheral,
-    M: DuplexMode,
-{
-    /// Create new SPI interface for communciation with a display driver
-    pub fn new(spi: SpiDma<'d, T, C, M>, dc: DC) -> Self {
-        Self {
-            spi: RefCell::new(Some(spi)),
-            dc,
-        }
-    }
-
-    /// Consume the display interface and return
-    /// the underlying peripherial driver and GPIO pins used by it
-    pub fn release(self) -> (SpiDma<'d, T, C, M>, DC) {
-        (self.spi.take().unwrap(), self.dc)
-    }
-}
-
-impl<'d, DC, T, C, M> WriteOnlyDataCommand for SPIInterfaceNoCS<'d, DC, T, C, M>
-where
-    DC: OutputPin + hal::prelude::_embedded_hal_digital_v2_OutputPin,
-    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-    C: ChannelTypes,
-    C::P: SpiPeripheral,
-    M: DuplexMode + IsFullDuplex,
-{
-    fn send_commands(&mut self, cmds: DataFormat<'_>) -> Result<(), DisplayError> {
-        // 1 = data, 0 = command
-        self.dc.set_low().map_err(|_| DisplayError::DCError)?;
-
-        // Send words over SPI
-        let res = send_u8(self.spi.take().unwrap(), cmds);
-
-        match res {
-            Ok(spi) => {
-                self.spi.replace(Some(spi));
-                Ok(())
-            }
-            Err(err) => Err(err),
-        }
-    }
-
-    fn send_data(&mut self, buf: DataFormat<'_>) -> Result<(), DisplayError> {
-        // 1 = data, 0 = command
-        self.dc.set_high().map_err(|_| DisplayError::DCError)?;
-
-        // Send words over SPI
-        let res = send_u8(self.spi.take().unwrap(), buf);
 
         match res {
             Ok(spi) => {

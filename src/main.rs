@@ -95,7 +95,7 @@ fn main() -> ! {
     gpio_backlight.set_high().unwrap();
 
     // create a DisplayInterface from SPI and DC pin, with no manual CS control
-    let di = spi_dma_displayinterface::SPIInterfaceNoCS::new(spi, dc);
+    let di = spi_dma_displayinterface::new_no_cs(spi, dc);
 
     // ESP32-S3-BOX display initialization workaround: Wait for the display to power up.
     // If delay is 250ms, picture will be fuzzy.
