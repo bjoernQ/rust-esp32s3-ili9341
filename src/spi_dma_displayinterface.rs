@@ -12,7 +12,7 @@ use hal::{
     spi::{DuplexMode, IsFullDuplex},
 };
 
-const DMA_BUFFER_SIZE: usize = 2048;
+const DMA_BUFFER_SIZE: usize = 8192;
 type SpiDma<'d, T, C, M> = hal::spi::master::dma::SpiDma<'d, T, C, M>;
 
 fn send_u8<'d, T, C, M>(
@@ -234,7 +234,7 @@ where
     }
 
     /// Consume the display interface and return
-    /// the underlying peripherial driver and GPIO pins used by it
+    /// the underlying peripheral driver and GPIO pins used by it
     pub fn release(self) -> (SpiDma<'d, T, C, M>, DC, CS) {
         (self.spi.take().unwrap(), self.dc, self.cs)
     }
