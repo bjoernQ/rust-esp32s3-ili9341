@@ -55,10 +55,13 @@ fn main() -> ! {
     wdt1.disable();
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
-    let sclk = io.pins.gpio6;
-    let miso = io.pins.gpio4;
-    let mosi = io.pins.gpio5;
-    let cs = io.pins.gpio1;
+    let sclk = io.pins.gpio7;
+    let mosi = io.pins.gpio6;
+    let cs = io.pins.gpio5;
+    let miso = io.pins.gpio2;
+    let dc = io.pins.gpio4.into_push_pull_output();
+    let mut gpio_backlight = io.pins.gpio45.into_push_pull_output();
+    let rst = io.pins.gpio48.into_push_pull_output();
 
     let dma = Gdma::new(peripherals.DMA, &mut system.peripheral_clock_control);
     let dma_channel = dma.channel0;
@@ -84,10 +87,6 @@ fn main() -> ! {
         DmaPriority::Priority0,
     ));
 
-    let rst = io.pins.gpio42.into_push_pull_output();
-    let mut gpio_backlight = io.pins.gpio7.into_push_pull_output();
-    let dc = io.pins.gpio2.into_push_pull_output();
-
     let mut delay = Delay::new(&clocks);
 
     // gpio_backlight.set_low().unwrap();
@@ -95,12 +94,38 @@ fn main() -> ! {
 
     // create a DisplayInterface from SPI and DC pin, with no manual CS control
     let di = spi_dma_displayinterface::SPIInterfaceNoCS::new(spi, dc);
+
+    // ESP32-S3-BOX display initialization workaround: Wait for the display to power up.
+    // If delay is 250ms, picture will be fuzzy.
+    // If there is no delay, display is blank
+    delay.delay_ms(500u32);
+
     let mut display = Builder::ili9341_rgb565(di)
+        .with_display_size(240, 320)
+        .with_orientation(mipidsi::Orientation::PortraitInverted(false))
+        .with_color_order(mipidsi::ColorOrder::Bgr)
         .init(&mut delay, Some(rst))
         .unwrap();
-    display.set_orientation(Orientation::Landscape(false)).ok();
 
-    display.clear(Rgb565::new(0, 0, 0)).unwrap(); // colors are weird R + B are opposite
+    // just clear doesn't work?
+    let mut count = 0;
+    display
+        .set_pixels(
+            0,
+            0,
+            320,
+            240,
+            core::iter::from_fn(move || {
+                count += 1;
+
+                if count > 320 * 240 {
+                    None
+                } else {
+                    Some(Rgb565::new(0, 0, 0))
+                }
+            }),
+        )
+        .unwrap();
 
     let mut i: usize = 0;
     let mut j: usize = 0;
