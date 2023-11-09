@@ -2,29 +2,36 @@
 
 use core::cell::RefCell;
 
-use embedded_hal::digital::v2::OutputPin;
-
 use display_interface::{DataFormat, DisplayError, WriteOnlyDataCommand};
+use hal::gpio::OutputPin;
+use hal::spi::master::dma::SpiDmaTransfer;
+use hal::spi::master::InstanceDma;
 use hal::{
-    dma::{Rx, SpiPeripheral, Tx},
+    dma::{ChannelTypes, SpiPeripheral},
     prelude::_esp_hal_dma_DmaTransfer,
-    spi::{dma::SpiDmaTransfer, InstanceDma},
+    spi::{DuplexMode, IsFullDuplex},
 };
 
 const DMA_BUFFER_SIZE: usize = 2048;
-type SpiDma<'d, T, TX, RX, P> = hal::spi::dma::SpiDma<'d, T, TX, RX, P>;
+type SpiDma<'d, T, C, M> = hal::spi::master::dma::SpiDma<'d, T, C, M>;
 
-fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
-    spi: SpiDma<'a, T, TX, RX, P>,
+fn send_u8<'d, T, C, M>(
+    spi: SpiDma<'d, T, C, M>,
     words: DataFormat<'_>,
-) -> Result<SpiDma<'a, T, TX, RX, P>, DisplayError> {
+) -> Result<SpiDma<'d, T, C, M>, DisplayError>
+where
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode + IsFullDuplex,
+{
     match words {
         DataFormat::U8(slice) => {
             let send_buffer = dma_buffer1();
             send_buffer[..slice.len()].copy_from_slice(slice);
 
             let transfer = spi.dma_write(&send_buffer[..slice.len()]).unwrap();
-            let (_, spi) = transfer.wait();
+            let (_, spi) = transfer.wait().unwrap();
             Ok(spi)
         }
         DataFormat::U16(slice) => {
@@ -34,7 +41,7 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
             send_buffer[..slice.len() * 2].copy_from_slice(slice.as_byte_slice());
 
             let transfer = spi.dma_write(&send_buffer[..slice.len() * 2]).unwrap();
-            let (_, spi) = transfer.wait();
+            let (_, spi) = transfer.wait().unwrap();
             Ok(spi)
         }
         DataFormat::U16LE(slice) => {
@@ -47,7 +54,7 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
             send_buffer[..slice.len() * 2].copy_from_slice(slice.as_byte_slice());
 
             let transfer = spi.dma_write(&send_buffer[..slice.len() * 2]).unwrap();
-            let (_, spi) = transfer.wait();
+            let (_, spi) = transfer.wait().unwrap();
             Ok(spi)
         }
         DataFormat::U16BE(slice) => {
@@ -60,7 +67,7 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
             send_buffer[..slice.len() * 2].copy_from_slice(slice.as_byte_slice());
 
             let transfer = spi.dma_write(&send_buffer[..slice.len() * 2]).unwrap();
-            let (_, spi) = transfer.wait();
+            let (_, spi) = transfer.wait().unwrap();
             Ok(spi)
         }
         DataFormat::U8Iter(iter) => {
@@ -87,7 +94,7 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
 
                 if idx > 0 {
                     let transfer = spi.dma_write(&mut send_buffer[..idx]).unwrap();
-                    (send_buffer, spi) = transfer.wait();
+                    (send_buffer, spi) = transfer.wait().unwrap();
                 } else {
                     break;
                 }
@@ -102,10 +109,10 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
             let mut spi = Some(spi);
 
             let mut current_buffer = 0;
-            let mut transfer: Option<SpiDmaTransfer<T, TX, RX, P, _>> = None;
+            let mut transfer: Option<SpiDmaTransfer<'d, T, C, _, M>> = None;
             loop {
                 if let Some(transfer) = transfer {
-                    let (relaimed_buffer, reclaimed_spi) = transfer.wait();
+                    let (relaimed_buffer, reclaimed_spi) = transfer.wait().unwrap();
                     spi = Some(reclaimed_spi);
                     send_buffer[current_buffer].replace(Some(relaimed_buffer));
 
@@ -149,7 +156,7 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
             let mut spi = Some(spi);
 
             let mut current_buffer = 0;
-            let mut transfer: Option<SpiDmaTransfer<T, TX, RX, P, _>> = None;
+            let mut transfer: Option<SpiDmaTransfer<'d, T, C, _, M>> = None;
             loop {
                 let buffer = send_buffer[current_buffer].take().unwrap();
                 let mut idx = 0;
@@ -172,7 +179,7 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
                 }
 
                 if let Some(transfer) = transfer {
-                    let (relaimed_buffer, reclaimed_spi) = transfer.wait();
+                    let (relaimed_buffer, reclaimed_spi) = transfer.wait().unwrap();
                     spi = Some(reclaimed_spi);
                     let done_buffer = current_buffer.wrapping_sub(1) % send_buffer.len();
                     send_buffer[done_buffer].replace(Some(relaimed_buffer));
@@ -194,28 +201,31 @@ fn send_u8<'a, T: InstanceDma<TX, RX>, TX: Tx, RX: Rx, P: SpiPeripheral>(
 /// SPI display interface.
 ///
 /// This combines the SPI peripheral and a data/command as well as a chip-select pin
-pub struct SPIInterface<'a, DC, CS, T, TX, RX, P>
+pub struct SPIInterface<'d, DC, CS, T, C, M>
 where
-    TX: Tx,
-    RX: Rx,
-    P: SpiPeripheral,
+    DC: OutputPin,
+    CS: OutputPin,
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode,
 {
-    spi: RefCell<Option<SpiDma<'a, T, TX, RX, P>>>,
+    spi: RefCell<Option<SpiDma<'d, T, C, M>>>,
     dc: DC,
     cs: CS,
 }
 
 #[allow(unused)]
-impl<'a, DC, CS, T, TX, RX, P> SPIInterface<'a, DC, CS, T, TX, RX, P>
+impl<'d, DC, CS, T, C, M> SPIInterface<'d, DC, CS, T, C, M>
 where
     DC: OutputPin,
     CS: OutputPin,
-    TX: Tx,
-    RX: Rx,
-    P: SpiPeripheral,
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode,
 {
-    /// Create new SPI interface for communication with a display driver
-    pub fn new(spi: SpiDma<'a, T, TX, RX, P>, dc: DC, cs: CS) -> Self {
+    pub fn new(spi: SpiDma<'d, T, C, M>, dc: DC, cs: CS) -> Self {
         Self {
             spi: RefCell::new(Some(spi)),
             dc,
@@ -225,19 +235,19 @@ where
 
     /// Consume the display interface and return
     /// the underlying peripherial driver and GPIO pins used by it
-    pub fn release(self) -> (SpiDma<'a, T, TX, RX, P>, DC, CS) {
+    pub fn release(self) -> (SpiDma<'d, T, C, M>, DC, CS) {
         (self.spi.take().unwrap(), self.dc, self.cs)
     }
 }
 
-impl<'a, DC, CS, T, TX, RX, P> WriteOnlyDataCommand for SPIInterface<'a, DC, CS, T, TX, RX, P>
+impl<'d, DC, CS, T, C, M> WriteOnlyDataCommand for SPIInterface<'d, DC, CS, T, C, M>
 where
-    DC: OutputPin,
-    CS: OutputPin,
-    T: InstanceDma<TX, RX>,
-    TX: Tx,
-    RX: Rx,
-    P: SpiPeripheral,
+    DC: OutputPin + hal::prelude::_embedded_hal_digital_v2_OutputPin,
+    CS: OutputPin + hal::prelude::_embedded_hal_digital_v2_OutputPin,
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode + IsFullDuplex,
 {
     fn send_commands(&mut self, cmds: DataFormat<'_>) -> Result<(), DisplayError> {
         // Assert chip select pin
@@ -287,27 +297,29 @@ where
 /// SPI display interface.
 ///
 /// This combines the SPI peripheral and a data/command pin
-pub struct SPIInterfaceNoCS<'a, DC, T, TX, RX, P>
+pub struct SPIInterfaceNoCS<'d, DC, T, C, M>
 where
     DC: OutputPin,
-    TX: Tx,
-    RX: Rx,
-    P: SpiPeripheral,
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode,
 {
-    spi: RefCell<Option<SpiDma<'a, T, TX, RX, P>>>,
+    spi: RefCell<Option<SpiDma<'d, T, C, M>>>,
     dc: DC,
 }
 
 #[allow(unused)]
-impl<'a, DC, T, TX, RX, P> SPIInterfaceNoCS<'a, DC, T, TX, RX, P>
+impl<'d, DC, T, C, M> SPIInterfaceNoCS<'d, DC, T, C, M>
 where
     DC: OutputPin,
-    TX: Tx,
-    RX: Rx,
-    P: SpiPeripheral,
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode,
 {
     /// Create new SPI interface for communciation with a display driver
-    pub fn new(spi: SpiDma<'a, T, TX, RX, P>, dc: DC) -> Self {
+    pub fn new(spi: SpiDma<'d, T, C, M>, dc: DC) -> Self {
         Self {
             spi: RefCell::new(Some(spi)),
             dc,
@@ -316,18 +328,18 @@ where
 
     /// Consume the display interface and return
     /// the underlying peripherial driver and GPIO pins used by it
-    pub fn release(self) -> (SpiDma<'a, T, TX, RX, P>, DC) {
+    pub fn release(self) -> (SpiDma<'d, T, C, M>, DC) {
         (self.spi.take().unwrap(), self.dc)
     }
 }
 
-impl<'a, DC, T, TX, RX, P> WriteOnlyDataCommand for SPIInterfaceNoCS<'a, DC, T, TX, RX, P>
+impl<'d, DC, T, C, M> WriteOnlyDataCommand for SPIInterfaceNoCS<'d, DC, T, C, M>
 where
-    DC: OutputPin,
-    T: InstanceDma<TX, RX>,
-    TX: Tx,
-    RX: Rx,
-    P: SpiPeripheral,
+    DC: OutputPin + hal::prelude::_embedded_hal_digital_v2_OutputPin,
+    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
+    C: ChannelTypes,
+    C::P: SpiPeripheral,
+    M: DuplexMode + IsFullDuplex,
 {
     fn send_commands(&mut self, cmds: DataFormat<'_>) -> Result<(), DisplayError> {
         // 1 = data, 0 = command

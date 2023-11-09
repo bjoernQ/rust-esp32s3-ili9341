@@ -1,19 +1,21 @@
 #![no_std]
 #![no_main]
 
-use embedded_graphics::{draw_target::DrawTarget, pixelcolor::Rgb565};
+use embedded_graphics::pixelcolor::Rgb565;
 use esp_backtrace as _;
 use hal::{
-    clock::{ClockControl, CpuClock},
+    clock::ClockControl,
     dma::DmaPriority,
     gdma::Gdma,
     peripherals::Peripherals,
     prelude::*,
-    spi::{Spi, SpiMode},
-    timer::TimerGroup,
-    Delay, Rtc, IO,
+    spi::{
+        master::{prelude::*, Spi},
+        SpiMode,
+    },
+    Delay, IO,
 };
-use mipidsi::{Builder, Orientation};
+use mipidsi::Builder;
 
 mod spi_dma_displayinterface;
 
@@ -40,19 +42,8 @@ const SINE_LUT: [u8; 256] = [
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
-    let mut system = peripherals.SYSTEM.split();
-    let clocks = ClockControl::configure(system.clock_control, CpuClock::Clock240MHz).freeze();
-
-    // Disable the RTC and TIMG watchdog timers
-    let mut rtc = Rtc::new(peripherals.RTC_CNTL);
-    let timer_group0 = TimerGroup::new(peripherals.TIMG0, &clocks);
-    let mut wdt0 = timer_group0.wdt;
-    let timer_group1 = TimerGroup::new(peripherals.TIMG1, &clocks);
-    let mut wdt1 = timer_group1.wdt;
-
-    rtc.rwdt.disable();
-    wdt0.disable();
-    wdt1.disable();
+    let system = peripherals.SYSTEM.split();
+    let clocks = ClockControl::max(system.clock_control).freeze();
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
     let sclk = io.pins.gpio7;
@@ -63,7 +54,7 @@ fn main() -> ! {
     let mut gpio_backlight = io.pins.gpio45.into_push_pull_output();
     let rst = io.pins.gpio48.into_push_pull_output();
 
-    let dma = Gdma::new(peripherals.DMA, &mut system.peripheral_clock_control);
+    let dma = Gdma::new(peripherals.DMA);
     let dma_channel = dma.channel0;
 
     let mut descriptors = [0u32; 8 * 3];
@@ -77,7 +68,6 @@ fn main() -> ! {
         cs,
         60u32.MHz(),
         SpiMode::Mode0,
-        &mut system.peripheral_clock_control,
         &clocks,
     )
     .with_dma(dma_channel.configure(
