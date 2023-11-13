@@ -403,6 +403,7 @@ name = "ili9431_esp32s3_test"
 version = "0.1.0"
 dependencies = [
  "byte-slice-cast",
+ "critical-section",
  "display-interface",
  "embedded-dma",
  "embedded-graphics",
@@ -411,6 +412,7 @@ dependencies = [
  "esp-println",
  "esp32s3-hal",
  "mipidsi",
+ "num-traits",
 ]
 
 [[package]]

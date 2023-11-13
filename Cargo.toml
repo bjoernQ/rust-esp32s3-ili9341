@@ -15,3 +15,8 @@ embedded-graphics = "0.8.1"
 display-interface = "0.4.1"
 byte-slice-cast = { version = "0.3.5", default-features = false }
 embedded-dma = "0.2.0"
+critical-section = "1.1.2"
+num-traits = { version = "0.2.17", default-features = false }
+
+[features]
+fps = []

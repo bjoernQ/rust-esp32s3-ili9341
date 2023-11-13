@@ -2,6 +2,7 @@
 
 use core::cell::RefCell;
 
+use byte_slice_cast::AsByteSlice;
 use display_interface::{DataFormat, DisplayError, WriteOnlyDataCommand};
 use hal::gpio::{Output, OutputPin, PushPull};
 use hal::spi::master::dma::SpiDmaTransfer;
@@ -32,6 +33,8 @@ where
     dc: DC,
     cs: Option<CS>,
 }
+
+// TODO always use full DMA-BUFFER SIZE for the last chunk
 
 #[allow(unused)]
 impl<'d, DC, CS, T, C, M> SPIInterface<'d, DC, CS, T, C, M>
@@ -77,14 +80,7 @@ where
                 let send_buffer = dma_buffer1();
                 send_buffer[..slice.len()].copy_from_slice(slice.as_byte_slice());
 
-                let transfer = self
-                    .spi
-                    .take()
-                    .unwrap()
-                    .dma_write(&send_buffer[..slice.len()])
-                    .unwrap();
-                let (_, reclaimed_spi) = transfer.wait().unwrap();
-                self.spi.replace(Some(reclaimed_spi));
+                self.single_transfer(&mut send_buffer[..slice.len()]);
             }
             DataFormat::U16(slice) => {
                 use byte_slice_cast::*;
@@ -92,14 +88,7 @@ where
                 let send_buffer = dma_buffer1();
                 send_buffer[..slice.len() * 2].copy_from_slice(slice.as_byte_slice());
 
-                let transfer = self
-                    .spi
-                    .take()
-                    .unwrap()
-                    .dma_write(&send_buffer[..slice.len() * 2])
-                    .unwrap();
-                let (_, reclaimed_spi) = transfer.wait().unwrap();
-                self.spi.replace(Some(reclaimed_spi));
+                self.single_transfer(&mut send_buffer[..slice.len() * 2]);
             }
             DataFormat::U16LE(slice) => {
                 use byte_slice_cast::*;
@@ -110,14 +99,7 @@ where
                 let send_buffer = dma_buffer1();
                 send_buffer[..slice.len() * 2].copy_from_slice(slice.as_byte_slice());
 
-                let transfer = self
-                    .spi
-                    .take()
-                    .unwrap()
-                    .dma_write(&send_buffer[..slice.len() * 2])
-                    .unwrap();
-                let (_, reclaimed_spi) = transfer.wait().unwrap();
-                self.spi.replace(Some(reclaimed_spi));
+                self.single_transfer(&mut send_buffer[..slice.len() * 2]);
             }
             DataFormat::U16BE(slice) => {
                 use byte_slice_cast::*;
@@ -128,171 +110,93 @@ where
                 let send_buffer = dma_buffer1();
                 send_buffer[..slice.len() * 2].copy_from_slice(slice.as_byte_slice());
 
-                let transfer = self
-                    .spi
-                    .take()
-                    .unwrap()
-                    .dma_write(&send_buffer[..slice.len() * 2])
-                    .unwrap();
-                let (_, reclaimed_spi) = transfer.wait().unwrap();
-                self.spi.replace(Some(reclaimed_spi));
+                self.single_transfer(&mut send_buffer[..slice.len() * 2]);
             }
             DataFormat::U8Iter(iter) => {
-                let send_buffer = [
-                    RefCell::new(Some(&mut dma_buffer1()[..])),
-                    RefCell::new(Some(&mut dma_buffer2()[..])),
-                ];
-
-                let mut spi = Some(self.spi.take().unwrap());
-                let mut current_buffer = 0;
-                let mut transfer: Option<SpiDmaTransfer<'d, T, C, _, M>> = None;
-                loop {
-                    let buffer = send_buffer[current_buffer].take().unwrap();
-                    let mut idx = 0;
-                    loop {
-                        let b = iter.next();
-
-                        match b {
-                            Some(b) => buffer[idx] = b,
-                            None => break,
-                        }
-
-                        idx += 1;
-
-                        if idx >= DMA_BUFFER_SIZE {
-                            break;
-                        }
-                    }
-
-                    if let Some(transfer) = transfer {
-                        if idx > 0 {
-                            let (relaimed_buffer, reclaimed_spi) = transfer.wait().unwrap();
-                            spi = Some(reclaimed_spi);
-                            let done_buffer = current_buffer.wrapping_sub(1) % send_buffer.len();
-                            send_buffer[done_buffer].replace(Some(relaimed_buffer));
-                        } else {
-                            // last transaction inflight
-                            self.transfer.replace(Some(transfer));
-                        }
-                    }
-
-                    if idx > 0 {
-                        transfer = Some(spi.take().unwrap().dma_write(&mut buffer[..idx]).unwrap());
-                        current_buffer = (current_buffer + 1) % send_buffer.len();
-                    } else {
-                        break;
-                    }
-                }
-                self.spi.replace(spi);
+                self.iter_transfer(iter, |v| v.to_be_bytes());
             }
             DataFormat::U16LEIter(iter) => {
-                let send_buffer = [
-                    RefCell::new(Some(&mut dma_buffer1()[..])),
-                    RefCell::new(Some(&mut dma_buffer2()[..])),
-                ];
-
-                let mut spi = Some(self.spi.take().unwrap());
-                let mut current_buffer = 0;
-                let mut transfer: Option<SpiDmaTransfer<'d, T, C, _, M>> = None;
-                loop {
-                    let buffer = send_buffer[current_buffer].take().unwrap();
-                    let mut idx = 0;
-                    loop {
-                        let b = iter.next();
-
-                        match b {
-                            Some(b) => {
-                                let b = b.to_le_bytes();
-                                buffer[idx + 0] = b[0];
-                                buffer[idx + 1] = b[1]
-                            }
-                            None => break,
-                        }
-
-                        idx += 2;
-
-                        if idx >= DMA_BUFFER_SIZE {
-                            break;
-                        }
-                    }
-
-                    if let Some(transfer) = transfer {
-                        if idx > 0 {
-                            let (relaimed_buffer, reclaimed_spi) = transfer.wait().unwrap();
-                            spi = Some(reclaimed_spi);
-                            let done_buffer = current_buffer.wrapping_sub(1) % send_buffer.len();
-                            send_buffer[done_buffer].replace(Some(relaimed_buffer));
-                        } else {
-                            // last transaction inflight
-                            self.transfer.replace(Some(transfer));
-                        }
-                    }
-
-                    if idx > 0 {
-                        transfer = Some(spi.take().unwrap().dma_write(&mut buffer[..idx]).unwrap());
-                        current_buffer = (current_buffer + 1) % send_buffer.len();
-                    } else {
-                        break;
-                    }
-                }
-                self.spi.replace(spi);
+                self.iter_transfer(iter, |v| v.to_le_bytes());
             }
             DataFormat::U16BEIter(iter) => {
-                let send_buffer = [
-                    RefCell::new(Some(&mut dma_buffer1()[..])),
-                    RefCell::new(Some(&mut dma_buffer2()[..])),
-                ];
-
-                let mut spi = Some(self.spi.take().unwrap());
-                let mut current_buffer = 0;
-                let mut transfer: Option<SpiDmaTransfer<'d, T, C, _, M>> = None;
-                loop {
-                    let buffer = send_buffer[current_buffer].take().unwrap();
-                    let mut idx = 0;
-                    loop {
-                        let b = iter.next();
-
-                        match b {
-                            Some(b) => {
-                                buffer[idx + 0] = ((b & 0xff00) >> 8) as u8;
-                                buffer[idx + 1] = (b & 0xff) as u8;
-                            }
-                            None => break,
-                        }
-
-                        idx += 2;
-
-                        if idx >= DMA_BUFFER_SIZE {
-                            break;
-                        }
-                    }
-
-                    if let Some(transfer) = transfer {
-                        if idx > 0 {
-                            let (relaimed_buffer, reclaimed_spi) = transfer.wait().unwrap();
-                            spi = Some(reclaimed_spi);
-                            let done_buffer = current_buffer.wrapping_sub(1) % send_buffer.len();
-                            send_buffer[done_buffer].replace(Some(relaimed_buffer));
-                        } else {
-                            // last transaction inflight
-                            self.transfer.replace(Some(transfer));
-                        }
-                    }
-
-                    if idx > 0 {
-                        transfer = Some(spi.take().unwrap().dma_write(&mut buffer[..idx]).unwrap());
-                        current_buffer = (current_buffer + 1) % send_buffer.len();
-                    } else {
-                        break;
-                    }
-                }
-                self.spi.replace(spi);
+                self.iter_transfer(iter, |v| v.to_be_bytes());
             }
             _ => {
                 return Err(DisplayError::DataFormatNotImplemented);
             }
         }
         Ok(())
+    }
+
+    fn single_transfer(&mut self, send_buffer: &'static mut [u8])
+    where
+        M: DuplexMode + IsFullDuplex,
+    {
+        let transfer = self.spi.take().unwrap().dma_write(send_buffer).unwrap();
+        let (_, reclaimed_spi) = transfer.wait().unwrap();
+        self.spi.replace(Some(reclaimed_spi));
+    }
+
+    fn iter_transfer<WORD>(
+        &mut self,
+        iter: &mut dyn Iterator<Item = WORD>,
+        convert: fn(WORD) -> <WORD as num_traits::ToBytes>::Bytes,
+    ) where
+        WORD: num_traits::int::PrimInt + num_traits::ToBytes,
+        M: DuplexMode + IsFullDuplex,
+    {
+        let send_buffer = [
+            RefCell::new(Some(&mut dma_buffer1()[..])),
+            RefCell::new(Some(&mut dma_buffer2()[..])),
+        ];
+
+        let mut spi = Some(self.spi.take().unwrap());
+        let mut current_buffer = 0;
+        let mut transfer: Option<SpiDmaTransfer<'d, T, C, _, M>> = None;
+        loop {
+            let buffer = send_buffer[current_buffer].take().unwrap();
+            let mut idx = 0;
+            loop {
+                let b = iter.next();
+
+                match b {
+                    Some(b) => {
+                        let b = convert(b);
+                        let b = b.as_byte_slice();
+                        buffer[idx + 0] = b[0];
+                        if b.len() == 2 {
+                            buffer[idx + 1] = b[1];
+                        }
+                        idx += b.len();
+                    }
+                    None => break,
+                }
+
+                if idx >= DMA_BUFFER_SIZE {
+                    break;
+                }
+            }
+
+            if let Some(transfer) = transfer {
+                if idx > 0 {
+                    let (relaimed_buffer, reclaimed_spi) = transfer.wait().unwrap();
+                    spi = Some(reclaimed_spi);
+                    let done_buffer = current_buffer.wrapping_sub(1) % send_buffer.len();
+                    send_buffer[done_buffer].replace(Some(relaimed_buffer));
+                } else {
+                    // last transaction inflight
+                    self.transfer.replace(Some(transfer));
+                }
+            }
+
+            if idx > 0 {
+                transfer = Some(spi.take().unwrap().dma_write(&mut buffer[..idx]).unwrap());
+                current_buffer = (current_buffer + 1) % send_buffer.len();
+            } else {
+                break;
+            }
+        }
+        self.spi.replace(spi);
     }
 }
 

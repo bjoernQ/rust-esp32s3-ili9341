@@ -1,13 +1,28 @@
 #![no_std]
 #![no_main]
 
+#[cfg(feature = "fps")]
+use core::cell::RefCell;
+#[cfg(feature = "fps")]
+use critical_section::Mutex;
+#[cfg(feature = "fps")]
+use esp_println::println;
+
 use embedded_graphics::pixelcolor::Rgb565;
 use esp_backtrace as _;
+
+#[cfg(feature = "fps")]
+use hal::{
+    interrupt::{self, Priority},
+    peripherals::{self},
+    systimer::{Alarm, Periodic, SystemTimer},
+};
+
 use hal::{
     clock::ClockControl,
     dma::DmaPriority,
     gdma::Gdma,
-    peripherals::Peripherals,
+    peripherals::{Peripherals},
     prelude::*,
     spi::{
         master::{prelude::*, Spi},
@@ -51,11 +66,34 @@ const SINE_LUT: [u8; 512] = [
     61, 63, 65, 69, 71, 75, 77, 79, 83, 85, 90, 92, 94, 98, 100, 105, 107, 109, 114, 116, 120, 123,
 ];
 
+#[cfg(feature = "fps")]
+static ALARM0: Mutex<RefCell<Option<Alarm<Periodic, 0>>>> = Mutex::new(RefCell::new(None));
+#[cfg(feature = "fps")]
+static mut FPS: u32 = 0;
+
 #[entry]
 fn main() -> ! {
     let peripherals = Peripherals::take();
     let system = peripherals.SYSTEM.split();
     let clocks = ClockControl::max(system.clock_control).freeze();
+
+    #[cfg(feature = "fps")]
+    {
+        let syst = SystemTimer::new(peripherals.SYSTIMER);
+        let alarm0 = syst.alarm0.into_periodic();
+        alarm0.set_period(1u32.secs());
+        alarm0.enable_interrupt(true);
+
+        critical_section::with(|cs| {
+            ALARM0.borrow_ref_mut(cs).replace(alarm0);
+        });
+
+        interrupt::enable(
+            peripherals::Interrupt::SYSTIMER_TARGET0,
+            Priority::Priority1,
+        )
+        .unwrap();
+    }
 
     let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
     let sclk = io.pins.gpio7;
@@ -176,7 +214,28 @@ fn main() -> ! {
         if k >= 255 {
             k = 0;
         }
+
+        #[cfg(feature = "fps")]
+        unsafe {
+            FPS += 1;
+        }
     }
 }
 
 static mut BUFFER: &mut [Rgb565; WIDTH * HEIGHT] = &mut [Rgb565::new(0, 0, 0); WIDTH * HEIGHT];
+
+#[cfg(feature = "fps")]
+#[interrupt]
+fn SYSTIMER_TARGET0() {
+    println!("FPS {}", unsafe { FPS });
+    unsafe {
+        FPS = 0;
+    }
+    critical_section::with(|cs| {
+        ALARM0
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .clear_interrupt()
+    });
+}
