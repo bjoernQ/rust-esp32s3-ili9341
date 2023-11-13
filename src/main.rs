@@ -22,7 +22,7 @@ use hal::{
     clock::ClockControl,
     dma::DmaPriority,
     gdma::Gdma,
-    peripherals::{Peripherals},
+    peripherals::Peripherals,
     prelude::*,
     spi::{
         master::{prelude::*, Spi},
@@ -133,7 +133,7 @@ fn main() -> ! {
     gpio_backlight.set_high().unwrap();
 
     // create a DisplayInterface from SPI and DC pin, with no manual CS control
-    let di = spi_dma_displayinterface::new_no_cs(spi, dc);
+    let di = spi_dma_displayinterface::new_no_cs(WIDTH * HEIGHT * 2, spi, dc);
 
     // ESP32-S3-BOX display initialization workaround: Wait for the display to power up.
     // If delay is 250ms, picture will be fuzzy.
@@ -172,7 +172,7 @@ fn main() -> ! {
     let mut k: usize = 0;
     loop {
         unsafe {
-            for idx in 0..WIDTH * HEIGHT {
+            for idx in (0..WIDTH * HEIGHT).step_by(2) {
                 let y = idx / WIDTH;
                 let x = idx % (WIDTH + 1);
 

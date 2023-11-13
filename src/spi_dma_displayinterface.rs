@@ -13,7 +13,7 @@ use hal::{
     spi::{DuplexMode, IsFullDuplex},
 };
 
-const DMA_BUFFER_SIZE: usize = 9000;
+const DMA_BUFFER_SIZE: usize = 4096;
 type SpiDma<'d, T, C, M> = hal::spi::master::dma::SpiDma<'d, T, C, M>;
 
 /// SPI display interface.
@@ -28,13 +28,12 @@ where
     C::P: SpiPeripheral,
     M: DuplexMode,
 {
+    avg_data_len_hint: usize,
     spi: RefCell<Option<SpiDma<'d, T, C, M>>>,
     transfer: RefCell<Option<SpiDmaTransfer<'d, T, C, &'static mut [u8], M>>>,
     dc: DC,
     cs: Option<CS>,
 }
-
-// TODO always use full DMA-BUFFER SIZE for the last chunk
 
 #[allow(unused)]
 impl<'d, DC, CS, T, C, M> SPIInterface<'d, DC, CS, T, C, M>
@@ -46,8 +45,9 @@ where
     C::P: SpiPeripheral,
     M: DuplexMode,
 {
-    pub fn new(spi: SpiDma<'d, T, C, M>, dc: DC, cs: CS) -> Self {
+    pub fn new(avg_data_len_hint: usize, spi: SpiDma<'d, T, C, M>, dc: DC, cs: CS) -> Self {
         Self {
+            avg_data_len_hint,
             spi: RefCell::new(Some(spi)),
             transfer: RefCell::new(None),
             dc,
@@ -145,16 +145,17 @@ where
         WORD: num_traits::int::PrimInt + num_traits::ToBytes,
         M: DuplexMode + IsFullDuplex,
     {
-        let send_buffer = [
-            RefCell::new(Some(&mut dma_buffer1()[..])),
-            RefCell::new(Some(&mut dma_buffer2()[..])),
-        ];
-
+        let mut desired_chunk_sized =
+            self.avg_data_len_hint - ((self.avg_data_len_hint / DMA_BUFFER_SIZE) * DMA_BUFFER_SIZE);
         let mut spi = Some(self.spi.take().unwrap());
         let mut current_buffer = 0;
         let mut transfer: Option<SpiDmaTransfer<'d, T, C, _, M>> = None;
         loop {
-            let buffer = send_buffer[current_buffer].take().unwrap();
+            let buffer = if current_buffer == 0 {
+                &mut dma_buffer1()[..]
+            } else {
+                &mut dma_buffer2()[..]
+            };
             let mut idx = 0;
             loop {
                 let b = iter.next();
@@ -172,17 +173,16 @@ where
                     None => break,
                 }
 
-                if idx >= DMA_BUFFER_SIZE {
+                if idx >= usize::min(desired_chunk_sized, DMA_BUFFER_SIZE) {
                     break;
                 }
             }
+            desired_chunk_sized = DMA_BUFFER_SIZE;
 
             if let Some(transfer) = transfer {
                 if idx > 0 {
                     let (relaimed_buffer, reclaimed_spi) = transfer.wait().unwrap();
                     spi = Some(reclaimed_spi);
-                    let done_buffer = current_buffer.wrapping_sub(1) % send_buffer.len();
-                    send_buffer[done_buffer].replace(Some(relaimed_buffer));
                 } else {
                     // last transaction inflight
                     self.transfer.replace(Some(transfer));
@@ -191,7 +191,7 @@ where
 
             if idx > 0 {
                 transfer = Some(spi.take().unwrap().dma_write(&mut buffer[..idx]).unwrap());
-                current_buffer = (current_buffer + 1) % send_buffer.len();
+                current_buffer = (current_buffer + 1) % 2;
             } else {
                 break;
             }
@@ -201,6 +201,7 @@ where
 }
 
 pub fn new_no_cs<'d, DC, T, C, M>(
+    avg_data_len_hint: usize,
     spi: SpiDma<'d, T, C, M>,
     dc: DC,
 ) -> SPIInterface<'d, DC, hal::gpio::Gpio0<Output<PushPull>>, T, C, M>
@@ -212,6 +213,7 @@ where
     M: DuplexMode,
 {
     SPIInterface {
+        avg_data_len_hint,
         spi: RefCell::new(Some(spi)),
         transfer: RefCell::new(None),
         dc,
