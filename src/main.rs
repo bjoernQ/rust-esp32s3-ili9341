@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![feature(type_alias_impl_trait)]
 
 #[cfg(feature = "fps")]
 use core::cell::RefCell;
@@ -12,23 +13,27 @@ use embedded_graphics::pixelcolor::Rgb565;
 use esp_backtrace as _;
 
 #[cfg(feature = "fps")]
-use hal::{
+use fugit::ExtU32;
+
+#[cfg(feature = "fps")]
+use esp_hal::{
     interrupt::{self, Priority},
     peripherals::{self},
-    systimer::{Alarm, Periodic, SystemTimer},
+    timer::systimer::{Alarm, Periodic, SystemTimer},
 };
 
-use hal::{
+use esp_hal::{
     clock::ClockControl,
-    dma::DmaPriority,
-    gdma::Gdma,
+    delay::Delay,
+    dma::{Dma, DmaDescriptor, DmaPriority},
+    gpio::{Io, Level, Output},
     peripherals::Peripherals,
     prelude::*,
     spi::{
         master::{prelude::*, Spi},
         SpiMode,
     },
-    Delay, IO,
+    system::SystemControl,
 };
 use mipidsi::Builder;
 
@@ -67,70 +72,65 @@ const SINE_LUT: [u8; 512] = [
 ];
 
 #[cfg(feature = "fps")]
-static ALARM0: Mutex<RefCell<Option<Alarm<Periodic, 0>>>> = Mutex::new(RefCell::new(None));
+static ALARM0: Mutex<RefCell<Option<Alarm<Periodic, esp_hal::Blocking, 0>>>> =
+    Mutex::new(RefCell::new(None));
 #[cfg(feature = "fps")]
 static mut FPS: u32 = 0;
 
 #[entry]
 fn main() -> ! {
+    esp_println::logger::init_logger_from_env();
+
     let peripherals = Peripherals::take();
-    let system = peripherals.SYSTEM.split();
+    let system = SystemControl::new(peripherals.SYSTEM);
     let clocks = ClockControl::max(system.clock_control).freeze();
 
     #[cfg(feature = "fps")]
     {
         let syst = SystemTimer::new(peripherals.SYSTIMER);
-        let alarm0 = syst.alarm0.into_periodic();
+        let mut alarm0 = syst.alarm0.into_periodic();
         alarm0.set_period(1u32.secs());
-        alarm0.enable_interrupt(true);
+        alarm0.set_interrupt_handler(systimer_target0);
 
         critical_section::with(|cs| {
+            alarm0.enable_interrupt(true);
             ALARM0.borrow_ref_mut(cs).replace(alarm0);
         });
-
-        interrupt::enable(
-            peripherals::Interrupt::SYSTIMER_TARGET0,
-            Priority::Priority1,
-        )
-        .unwrap();
     }
 
-    let io = IO::new(peripherals.GPIO, peripherals.IO_MUX);
+    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
     let sclk = io.pins.gpio7;
     let mosi = io.pins.gpio6;
     let cs = io.pins.gpio5;
     let miso = io.pins.gpio2;
-    let dc = io.pins.gpio4.into_push_pull_output();
-    let mut gpio_backlight = io.pins.gpio45.into_push_pull_output();
-    let rst = io.pins.gpio48.into_push_pull_output();
+    let dc = Output::new(io.pins.gpio4, Level::Low);
+    let mut gpio_backlight = Output::new(io.pins.gpio45, Level::Low);
+    let rst = Output::new(io.pins.gpio48, Level::Low);
 
-    let dma = Gdma::new(peripherals.DMA);
+    let dma = Dma::new(peripherals.DMA);
     let dma_channel = dma.channel0;
 
-    let mut descriptors = [0u32; 8 * 3];
-    let mut rx_descriptors = [0u32; 8 * 3];
+    let descriptors = [DmaDescriptor::EMPTY; 8 * 3];
+    let rx_descriptors = [DmaDescriptor::EMPTY; 8 * 3];
 
-    let spi = Spi::new(
-        peripherals.SPI2,
-        sclk,
-        mosi,
-        miso,
-        cs,
-        60u32.MHz(),
-        SpiMode::Mode0,
-        &clocks,
-    )
-    .with_dma(dma_channel.configure(
-        false,
-        &mut descriptors,
-        &mut rx_descriptors,
-        DmaPriority::Priority0,
-    ));
+    let descriptors = static_cell::make_static!(descriptors);
+    let rx_descriptors = static_cell::make_static!(rx_descriptors);
+
+    let spi = Spi::new(peripherals.SPI2, 60u32.MHz(), SpiMode::Mode0, &clocks)
+        .with_sck(sclk)
+        .with_mosi(mosi)
+        .with_miso(miso)
+        .with_cs(cs)
+        .with_dma(
+            dma_channel.configure(false, DmaPriority::Priority0),
+            descriptors,
+            rx_descriptors,
+        );
 
     let mut delay = Delay::new(&clocks);
 
     // gpio_backlight.set_low().unwrap();
-    gpio_backlight.set_high().unwrap();
+    gpio_backlight.set_high();
 
     // create a DisplayInterface from SPI and DC pin, with no manual CS control
     let di = spi_dma_displayinterface::new_no_cs(WIDTH * HEIGHT * 2, spi, dc);
@@ -138,7 +138,7 @@ fn main() -> ! {
     // ESP32-S3-BOX display initialization workaround: Wait for the display to power up.
     // If delay is 250ms, picture will be fuzzy.
     // If there is no delay, display is blank
-    delay.delay_ms(500u32);
+    delay.delay_millis(500u32);
 
     let mut display = Builder::ili9341_rgb565(di)
         .with_display_size(240, 320)
@@ -225,8 +225,8 @@ fn main() -> ! {
 static mut BUFFER: &mut [Rgb565; WIDTH * HEIGHT] = &mut [Rgb565::new(0, 0, 0); WIDTH * HEIGHT];
 
 #[cfg(feature = "fps")]
-#[interrupt]
-fn SYSTIMER_TARGET0() {
+#[handler]
+fn systimer_target0() {
     println!("FPS {}", unsafe { FPS });
     unsafe {
         FPS = 0;

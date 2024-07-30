@@ -5,7 +5,6 @@ runner = "espflash flash --monitor"
 rustflags = [
   "-C", "link-arg=-Tlinkall.x",
   "-C", "link-arg=-nostartfiles",
-  "-C", "target-feature=-loop",
 ]
 
 target = "xtensa-esp32s3-none-elf"
