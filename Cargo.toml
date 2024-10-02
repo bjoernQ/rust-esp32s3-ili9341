@@ -6,17 +6,16 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-esp-hal = { package = "esp-hal", version = "0.19.0", features = [
+esp-hal = { package = "esp-hal", version = "0.20.1", features = [
     "esp32s3",
-    "embedded-hal-02",
     "log",
 ] }
-esp-backtrace = { version = "0.13.0", features = [
+esp-backtrace = { version = "0.14.1", features = [
     "esp32s3",
     "panic-handler",
     "println",
 ] }
-esp-println = { version = "0.10.0", features = ["esp32s3", "log"] }
+esp-println = { version = "0.11.0", features = ["esp32s3", "log"] }
 mipidsi = "0.7.1"
 embedded-hal = "0.2.7"
 embedded-graphics = "0.8.1"
@@ -30,3 +29,10 @@ static_cell = { version = "2.1.0", features = ["nightly"] }
 
 [features]
 fps = []
+
+[patch.crates-io]
+# working
+esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal",   rev = "a5ab73959e28d117744c60ac383f45c20c65a400"}
+
+# non working
+# esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal",   rev = "f11c18a6b93eb54e02494fa4df2a2941dcd5b44f"}

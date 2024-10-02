@@ -23,17 +23,11 @@ use esp_hal::{
 };
 
 use esp_hal::{
-    clock::ClockControl,
     delay::Delay,
-    dma::{Dma, DmaDescriptor, DmaPriority},
+    dma::{Dma, DmaPriority},
     gpio::{Io, Level, Output},
-    peripherals::Peripherals,
     prelude::*,
-    spi::{
-        master::{prelude::*, Spi},
-        SpiMode,
-    },
-    system::SystemControl,
+    spi::{master::Spi, SpiMode},
 };
 use mipidsi::Builder;
 
@@ -81,9 +75,7 @@ static mut FPS: u32 = 0;
 fn main() -> ! {
     esp_println::logger::init_logger_from_env();
 
-    let peripherals = Peripherals::take();
-    let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = ClockControl::max(system.clock_control).freeze();
+    let peripherals = esp_hal::init(esp_hal::Config::default());
 
     #[cfg(feature = "fps")]
     {
@@ -110,24 +102,14 @@ fn main() -> ! {
     let dma = Dma::new(peripherals.DMA);
     let dma_channel = dma.channel0;
 
-    let descriptors = [DmaDescriptor::EMPTY; 8 * 3];
-    let rx_descriptors = [DmaDescriptor::EMPTY; 8 * 3];
-
-    let descriptors = static_cell::make_static!(descriptors);
-    let rx_descriptors = static_cell::make_static!(rx_descriptors);
-
-    let spi = Spi::new(peripherals.SPI2, 60u32.MHz(), SpiMode::Mode0, &clocks)
+    let spi = Spi::new(peripherals.SPI2, 60u32.MHz(), SpiMode::Mode0)
         .with_sck(sclk)
         .with_mosi(mosi)
         .with_miso(miso)
         .with_cs(cs)
-        .with_dma(
-            dma_channel.configure(false, DmaPriority::Priority0),
-            descriptors,
-            rx_descriptors,
-        );
+        .with_dma(dma_channel.configure(false, DmaPriority::Priority0));
 
-    let mut delay = Delay::new(&clocks);
+    let mut delay = Delay::new();
 
     // gpio_backlight.set_low().unwrap();
     gpio_backlight.set_high();
