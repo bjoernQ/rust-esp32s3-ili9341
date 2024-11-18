@@ -2,38 +2,15 @@
 #![no_main]
 #![feature(type_alias_impl_trait)]
 
-#[cfg(feature = "fps")]
-use core::cell::RefCell;
-#[cfg(feature = "fps")]
-use critical_section::Mutex;
-#[cfg(feature = "fps")]
-use esp_println::println;
-
 use embedded_graphics::pixelcolor::Rgb565;
 use esp_backtrace as _;
 
-#[cfg(feature = "fps")]
-use fugit::ExtU32;
-
-#[cfg(feature = "fps")]
 use esp_hal::{
-    interrupt::{self, Priority},
-    peripherals::{self},
-    timer::systimer::{Alarm, Periodic, SystemTimer},
-};
-
-use esp_hal::{
-    clock::ClockControl,
     delay::Delay,
-    dma::{Dma, DmaDescriptor, DmaPriority},
-    gpio::{Io, Level, Output},
-    peripherals::Peripherals,
+    dma::{Dma, DmaPriority},
+    gpio::{Level, Output},
     prelude::*,
-    spi::{
-        master::{prelude::*, Spi},
-        SpiMode,
-    },
-    system::SystemControl,
+    spi::master::Spi,
 };
 use mipidsi::Builder;
 
@@ -71,63 +48,41 @@ const SINE_LUT: [u8; 512] = [
     61, 63, 65, 69, 71, 75, 77, 79, 83, 85, 90, 92, 94, 98, 100, 105, 107, 109, 114, 116, 120, 123,
 ];
 
-#[cfg(feature = "fps")]
-static ALARM0: Mutex<RefCell<Option<Alarm<Periodic, esp_hal::Blocking, 0>>>> =
-    Mutex::new(RefCell::new(None));
-#[cfg(feature = "fps")]
-static mut FPS: u32 = 0;
-
 #[entry]
 fn main() -> ! {
     esp_println::logger::init_logger_from_env();
 
-    let peripherals = Peripherals::take();
-    let system = SystemControl::new(peripherals.SYSTEM);
-    let clocks = ClockControl::max(system.clock_control).freeze();
+    let peripherals = esp_hal::init({
+        let mut cfg = esp_hal::Config::default();
+        cfg.cpu_clock = CpuClock::max();
+        cfg
+    });
 
-    #[cfg(feature = "fps")]
-    {
-        let syst = SystemTimer::new(peripherals.SYSTIMER);
-        let mut alarm0 = syst.alarm0.into_periodic();
-        alarm0.set_period(1u32.secs());
-        alarm0.set_interrupt_handler(systimer_target0);
-
-        critical_section::with(|cs| {
-            alarm0.enable_interrupt(true);
-            ALARM0.borrow_ref_mut(cs).replace(alarm0);
-        });
-    }
-
-    let io = Io::new(peripherals.GPIO, peripherals.IO_MUX);
-    let sclk = io.pins.gpio7;
-    let mosi = io.pins.gpio6;
-    let cs = io.pins.gpio5;
-    let miso = io.pins.gpio2;
-    let dc = Output::new(io.pins.gpio4, Level::Low);
-    let mut gpio_backlight = Output::new(io.pins.gpio45, Level::Low);
-    let rst = Output::new(io.pins.gpio48, Level::Low);
+    let sclk = peripherals.GPIO7;
+    let mosi = peripherals.GPIO6;
+    let cs = peripherals.GPIO5;
+    let miso = peripherals.GPIO2;
+    let dc = Output::new(peripherals.GPIO4, Level::Low);
+    let mut gpio_backlight = Output::new(peripherals.GPIO45, Level::Low);
+    let rst = Output::new(peripherals.GPIO48, Level::Low);
 
     let dma = Dma::new(peripherals.DMA);
     let dma_channel = dma.channel0;
 
-    let descriptors = [DmaDescriptor::EMPTY; 8 * 3];
-    let rx_descriptors = [DmaDescriptor::EMPTY; 8 * 3];
+    let spi = Spi::new_with_config(
+        peripherals.SPI2,
+        esp_hal::spi::master::Config {
+            frequency: 60u32.MHz(),
+            ..esp_hal::spi::master::Config::default()
+        },
+    )
+    .with_sck(sclk)
+    .with_mosi(mosi)
+    .with_miso(miso)
+    .with_cs(cs)
+    .with_dma(dma_channel.configure(false, DmaPriority::Priority0));
 
-    let descriptors = static_cell::make_static!(descriptors);
-    let rx_descriptors = static_cell::make_static!(rx_descriptors);
-
-    let spi = Spi::new(peripherals.SPI2, 60u32.MHz(), SpiMode::Mode0, &clocks)
-        .with_sck(sclk)
-        .with_mosi(mosi)
-        .with_miso(miso)
-        .with_cs(cs)
-        .with_dma(
-            dma_channel.configure(false, DmaPriority::Priority0),
-            descriptors,
-            rx_descriptors,
-        );
-
-    let mut delay = Delay::new(&clocks);
+    let mut delay = Delay::new();
 
     // gpio_backlight.set_low().unwrap();
     gpio_backlight.set_high();
@@ -140,11 +95,12 @@ fn main() -> ! {
     // If there is no delay, display is blank
     delay.delay_millis(500u32);
 
-    let mut display = Builder::ili9341_rgb565(di)
-        .with_display_size(240, 320)
-        .with_orientation(mipidsi::Orientation::PortraitInverted(false))
-        .with_color_order(mipidsi::ColorOrder::Bgr)
-        .init(&mut delay, Some(rst))
+    let mut display = Builder::new(mipidsi::models::ILI9341Rgb565, di)
+        .display_size(240, 320)
+        .orientation(mipidsi::options::Orientation::new())
+        .color_order(mipidsi::options::ColorOrder::Bgr)
+        .reset_pin(rst)
+        .init(&mut delay)
         .unwrap();
 
     // just clear doesn't work?
@@ -214,28 +170,7 @@ fn main() -> ! {
         if k >= 255 {
             k = 0;
         }
-
-        #[cfg(feature = "fps")]
-        unsafe {
-            FPS += 1;
-        }
     }
 }
 
 static mut BUFFER: &mut [Rgb565; WIDTH * HEIGHT] = &mut [Rgb565::new(0, 0, 0); WIDTH * HEIGHT];
-
-#[cfg(feature = "fps")]
-#[handler]
-fn systimer_target0() {
-    println!("FPS {}", unsafe { FPS });
-    unsafe {
-        FPS = 0;
-    }
-    critical_section::with(|cs| {
-        ALARM0
-            .borrow_ref_mut(cs)
-            .as_mut()
-            .unwrap()
-            .clear_interrupt()
-    });
-}

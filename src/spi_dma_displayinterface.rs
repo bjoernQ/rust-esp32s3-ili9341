@@ -5,47 +5,29 @@ use core::ptr::addr_of_mut;
 
 use byte_slice_cast::AsByteSlice;
 use display_interface::{DataFormat, DisplayError, WriteOnlyDataCommand};
-use esp_hal::dma::{ChannelTypes, DmaTransferTxOwned, SpiPeripheral};
-use esp_hal::gpio::{Gpio0, Output, OutputPin};
-use esp_hal::spi::master::InstanceDma;
+use esp_hal::{
+    dma::{DmaDescriptor, DmaTxBuf},
+    gpio::Output,
+    spi::master::SpiDmaTransfer,
+};
 
 const DMA_BUFFER_SIZE: usize = 4096;
-type SpiDma<'d, T, C> =
-    esp_hal::spi::master::dma::SpiDma<'d, T, C, esp_hal::spi::FullDuplexMode, esp_hal::Blocking>;
+type SpiDma<'d> = esp_hal::spi::master::SpiDma<'d, esp_hal::Blocking>;
 
 /// SPI display interface.
 ///
 /// This combines the SPI peripheral and a data/command as well as a chip-select pin
-pub struct SPIInterface<'d, DC, CS, T, C>
-where
-    DC: OutputPin,
-    CS: OutputPin,
-    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-    C: ChannelTypes,
-    C::P: SpiPeripheral,
-{
+pub struct SPIInterface<'d> {
     avg_data_len_hint: usize,
-    spi: RefCell<Option<SpiDma<'d, T, C>>>,
-    transfer: RefCell<Option<DmaTransferTxOwned<SpiDma<'d, T, C>, &'static mut [u8]>>>,
-    dc: Output<'d, DC>,
-    cs: Option<Output<'d, CS>>,
+    spi: RefCell<Option<SpiDma<'d>>>,
+    transfer: RefCell<Option<SpiDmaTransfer<'d, esp_hal::Blocking, DmaTxBuf>>>,
+    dc: Output<'d>,
+    cs: Option<Output<'d>>,
 }
 
 #[allow(unused)]
-impl<'d, DC, CS, T, C> SPIInterface<'d, DC, CS, T, C>
-where
-    DC: OutputPin,
-    CS: OutputPin,
-    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-    C: ChannelTypes,
-    C::P: SpiPeripheral,
-{
-    pub fn new(
-        avg_data_len_hint: usize,
-        spi: SpiDma<'d, T, C>,
-        dc: Output<'d, DC>,
-        cs: Output<'d, CS>,
-    ) -> Self {
+impl<'d> SPIInterface<'d> {
+    pub fn new(avg_data_len_hint: usize, spi: SpiDma<'d>, dc: Output<'d>, cs: Output<'d>) -> Self {
         Self {
             avg_data_len_hint,
             spi: RefCell::new(Some(spi)),
@@ -55,14 +37,9 @@ where
         }
     }
 
-    fn send_u8(&mut self, words: DataFormat<'_>) -> Result<(), DisplayError>
-    where
-        T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-        C: ChannelTypes,
-        C::P: SpiPeripheral,
-    {
+    fn send_u8(&mut self, words: DataFormat<'_>) -> Result<(), DisplayError> {
         if let Some(transfer) = self.transfer.take() {
-            let (reclaimed_spi, _) = transfer.wait().unwrap();
+            let (reclaimed_spi, _) = transfer.wait();
             self.spi.replace(Some(reclaimed_spi));
         }
 
@@ -122,13 +99,9 @@ where
     }
 
     fn single_transfer(&mut self, send_buffer: &'static mut [u8]) {
-        let transfer = self
-            .spi
-            .take()
-            .unwrap()
-            .dma_write_owned(send_buffer)
-            .unwrap();
-        let (reclaimed_spi, _) = transfer.wait().unwrap();
+        let mut buffer = DmaTxBuf::new(descriptors(), send_buffer).unwrap();
+        let transfer = self.spi.take().unwrap().write(buffer).unwrap();
+        let (reclaimed_spi, _) = transfer.wait();
         self.spi.replace(Some(reclaimed_spi));
     }
 
@@ -143,7 +116,7 @@ where
             self.avg_data_len_hint - ((self.avg_data_len_hint / DMA_BUFFER_SIZE) * DMA_BUFFER_SIZE);
         let mut spi = Some(self.spi.take().unwrap());
         let mut current_buffer = 0;
-        let mut transfer: Option<DmaTransferTxOwned<SpiDma<'d, T, C>, &'static mut [u8]>> = None;
+        let mut transfer: Option<SpiDmaTransfer<'d, esp_hal::Blocking, DmaTxBuf>> = None;
         loop {
             let buffer = if current_buffer == 0 {
                 &mut dma_buffer1()[..]
@@ -175,7 +148,7 @@ where
 
             if let Some(transfer) = transfer {
                 if idx > 0 {
-                    let (reclaimed_spi, relaimed_buffer) = transfer.wait().unwrap();
+                    let (reclaimed_spi, relaimed_buffer) = transfer.wait();
                     spi = Some(reclaimed_spi);
                 } else {
                     // last transaction inflight
@@ -184,12 +157,9 @@ where
             }
 
             if idx > 0 {
-                transfer = Some(
-                    spi.take()
-                        .unwrap()
-                        .dma_write_owned(&mut buffer[..idx])
-                        .unwrap(),
-                );
+                let mut dma_buffer = DmaTxBuf::new(descriptors(), buffer).unwrap();
+                dma_buffer.set_length(idx);
+                transfer = Some(spi.take().unwrap().write(dma_buffer).unwrap());
                 current_buffer = (current_buffer + 1) % 2;
             } else {
                 break;
@@ -198,34 +168,21 @@ where
     }
 }
 
-pub fn new_no_cs<'d, DC, T, C>(
+pub fn new_no_cs<'d>(
     avg_data_len_hint: usize,
-    spi: SpiDma<'d, T, C>,
-    dc: Output<'d, DC>,
-) -> SPIInterface<'d, DC, Gpio0, T, C>
-where
-    DC: OutputPin,
-    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-    C: ChannelTypes,
-    C::P: SpiPeripheral,
-{
+    spi: SpiDma<'d>,
+    dc: Output<'d>,
+) -> SPIInterface<'d> {
     SPIInterface {
         avg_data_len_hint,
         spi: RefCell::new(Some(spi)),
         transfer: RefCell::new(None),
         dc,
-        cs: None::<Output<Gpio0>>,
+        cs: None,
     }
 }
 
-impl<'d, DC, CS, T, C> WriteOnlyDataCommand for SPIInterface<'d, DC, CS, T, C>
-where
-    DC: OutputPin,
-    CS: OutputPin,
-    T: InstanceDma<C::Tx<'d>, C::Rx<'d>>,
-    C: ChannelTypes,
-    C::P: SpiPeripheral,
-{
+impl<'d> WriteOnlyDataCommand for SPIInterface<'d> {
     fn send_commands(&mut self, cmds: DataFormat<'_>) -> Result<(), DisplayError> {
         // Assert chip select pin
         if let Some(cs) = self.cs.as_mut() {
@@ -265,6 +222,11 @@ where
 
         res
     }
+}
+
+fn descriptors() -> &'static mut [DmaDescriptor; 8 * 3] {
+    static mut DESCRIPTORS: [DmaDescriptor; 8 * 3] = [DmaDescriptor::EMPTY; 8 * 3];
+    unsafe { &mut *addr_of_mut!(DESCRIPTORS) }
 }
 
 fn dma_buffer1() -> &'static mut [u8; DMA_BUFFER_SIZE] {
