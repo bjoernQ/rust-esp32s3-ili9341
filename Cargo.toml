@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 esp-hal = { package = "esp-hal", version = "0.23.1", features = [
     "esp32s3",
     "log",
+    "unstable",
 ] }
 esp-backtrace = { version = "0.15.0", features = [
     "esp32s3",
@@ -32,8 +33,6 @@ xtensa-lx = { version = "0.10.0" }
 fps = []
 
 [patch.crates-io]
-esp-hal = { path = "/projects/upstream/esp-hal/esp-hal" }
-xtensa-lx-rt = { path = "/projects/upstream/esp-hal/xtensa-lx-rt" }
-xtensa-lx = { path = "/projects/upstream/esp-hal/xtensa-lx" }
-
-#esp-hal = { git = "https://github.com/esp-rs/esp-hal", rev="2472e362322c95f6ffa451ff80b6c1867c1cfdf4"}
+esp-hal = { git = "https://github.com/esp-rs/esp-hal.git" }
+xtensa-lx-rt = { git = "https://github.com/esp-rs/esp-hal.git" }
+xtensa-lx = { git = "https://github.com/esp-rs/esp-hal.git" }

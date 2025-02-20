@@ -6,9 +6,13 @@ use embedded_graphics::pixelcolor::Rgb565;
 use esp_backtrace as _;
 
 use esp_hal::{
-    clock::CpuClock, delay::Delay, dma::DmaPriority, gpio::{Level, Output, OutputConfig}, main, spi::master::Spi
+    clock::CpuClock,
+    delay::Delay,
+    gpio::{Level, Output, OutputConfig},
+    main,
+    spi::master::Spi,
+    time::Rate,
 };
-use fugit::RateExtU32;
 use mipidsi::Builder;
 
 mod spi_dma_displayinterface;
@@ -49,11 +53,7 @@ const SINE_LUT: [u8; 512] = [
 fn main() -> ! {
     esp_println::logger::init_logger_from_env();
 
-    let peripherals = esp_hal::init({
-        let mut cfg = esp_hal::Config::default();
-        cfg.cpu_clock = CpuClock::max();
-        cfg
-    });
+    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(CpuClock::max()));
 
     let sclk = peripherals.GPIO7;
     let mosi = peripherals.GPIO6;
@@ -65,7 +65,7 @@ fn main() -> ! {
 
     let spi = Spi::new(
         peripherals.SPI2,
-        esp_hal::spi::master::Config::default().with_frequency(60u32.MHz()),
+        esp_hal::spi::master::Config::default().with_frequency(Rate::from_mhz(60)),
     )
     .unwrap()
     .with_sck(sclk)
