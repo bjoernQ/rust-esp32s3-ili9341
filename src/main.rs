@@ -6,12 +6,9 @@ use embedded_graphics::pixelcolor::Rgb565;
 use esp_backtrace as _;
 
 use esp_hal::{
-    delay::Delay,
-    dma::{Dma, DmaPriority},
-    gpio::{Level, Output},
-    prelude::*,
-    spi::master::Spi,
+    clock::CpuClock, delay::Delay, dma::DmaPriority, gpio::{Level, Output, OutputConfig}, main, spi::master::Spi
 };
+use fugit::RateExtU32;
 use mipidsi::Builder;
 
 mod spi_dma_displayinterface;
@@ -48,7 +45,7 @@ const SINE_LUT: [u8; 512] = [
     61, 63, 65, 69, 71, 75, 77, 79, 83, 85, 90, 92, 94, 98, 100, 105, 107, 109, 114, 116, 120, 123,
 ];
 
-#[entry]
+#[main]
 fn main() -> ! {
     esp_println::logger::init_logger_from_env();
 
@@ -62,25 +59,20 @@ fn main() -> ! {
     let mosi = peripherals.GPIO6;
     let cs = peripherals.GPIO5;
     let miso = peripherals.GPIO2;
-    let dc = Output::new(peripherals.GPIO4, Level::Low);
-    let mut gpio_backlight = Output::new(peripherals.GPIO45, Level::Low);
-    let rst = Output::new(peripherals.GPIO48, Level::Low);
+    let dc = Output::new(peripherals.GPIO4, Level::Low, OutputConfig::default());
+    let mut gpio_backlight = Output::new(peripherals.GPIO45, Level::Low, OutputConfig::default());
+    let rst = Output::new(peripherals.GPIO48, Level::Low, OutputConfig::default());
 
-    let dma = Dma::new(peripherals.DMA);
-    let dma_channel = dma.channel0;
-
-    let spi = Spi::new_with_config(
+    let spi = Spi::new(
         peripherals.SPI2,
-        esp_hal::spi::master::Config {
-            frequency: 60u32.MHz(),
-            ..esp_hal::spi::master::Config::default()
-        },
+        esp_hal::spi::master::Config::default().with_frequency(60u32.MHz()),
     )
+    .unwrap()
     .with_sck(sclk)
     .with_mosi(mosi)
     .with_miso(miso)
     .with_cs(cs)
-    .with_dma(dma_channel.configure(false, DmaPriority::Priority0));
+    .with_dma(peripherals.DMA_CH0);
 
     let mut delay = Delay::new();
 
